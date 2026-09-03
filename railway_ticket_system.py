@@ -234,3 +234,19 @@ class Database:
 
     def close(self):
         self.conn.close()
+
+# ----------------------------- Core system ----------------------------- #
+
+class RailwaySystem:
+    CLASS_INFO = {
+        "SL": {"name": "Sleeper", "multiplier": 1.0},
+        "3A": {"name": "AC 3-Tier", "multiplier": 2.1},
+        "2A": {"name": "AC 2-Tier", "multiplier": 3.1},
+        "1A": {"name": "First AC", "multiplier": 4.3},
+        "CC": {"name": "Chair Car", "multiplier": 1.5},
+    }
+
+    BERTHS = ["Lower", "Middle", "Upper", "Side Lower", "Side Upper"]
+
+    def __init__(self, db: Database):
+        self.db = db
