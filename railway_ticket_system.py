@@ -112,3 +112,125 @@ class SearchResult:
     source: str
     destination: str
     duration_hours: float
+
+# ----------------------------- Database ----------------------------- #
+
+class Database:
+    def __init__(self, db_name: str = DB_NAME):
+        self.conn = sqlite3.connect(db_name)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.create_schema()
+
+    def create_schema(self):
+        self.conn.executescript("""
+        CREATE TABLE IF NOT EXISTS stations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL UNIQUE,
+            city TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS trains (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            train_no TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            train_type TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS routes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            train_id INTEGER NOT NULL,
+            station_id INTEGER NOT NULL,
+            stop_no INTEGER NOT NULL,
+            arrival TEXT,
+            departure TEXT,
+            distance_km REAL NOT NULL DEFAULT 0,
+            FOREIGN KEY(train_id) REFERENCES trains(id) ON DELETE CASCADE,
+            FOREIGN KEY(station_id) REFERENCES stations(id) ON DELETE CASCADE,
+            UNIQUE(train_id, stop_no)
+        );
+
+        CREATE TABLE IF NOT EXISTS coaches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            train_id INTEGER NOT NULL,
+            coach_code TEXT NOT NULL,
+            class_code TEXT NOT NULL,
+            seat_capacity INTEGER NOT NULL,
+            FOREIGN KEY(train_id) REFERENCES trains(id) ON DELETE CASCADE,
+            UNIQUE(train_id, coach_code)
+        );
+
+        CREATE TABLE IF NOT EXISTS fares (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            train_id INTEGER NOT NULL,
+            class_code TEXT NOT NULL,
+            rate_per_km REAL NOT NULL,
+            base_fare REAL NOT NULL DEFAULT 50,
+            FOREIGN KEY(train_id) REFERENCES trains(id) ON DELETE CASCADE,
+            UNIQUE(train_id, class_code)
+        );
+
+        CREATE TABLE IF NOT EXISTS bookings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pnr TEXT NOT NULL UNIQUE,
+            train_id INTEGER NOT NULL,
+            journey_date TEXT NOT NULL,
+            source_station_id INTEGER NOT NULL,
+            destination_station_id INTEGER NOT NULL,
+            class_code TEXT NOT NULL,
+            status TEXT NOT NULL,
+            total_fare REAL NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(train_id) REFERENCES trains(id),
+            FOREIGN KEY(source_station_id) REFERENCES stations(id),
+            FOREIGN KEY(destination_station_id) REFERENCES stations(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS passengers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            booking_id INTEGER NOT NULL,
+            passenger_no INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            age INTEGER NOT NULL,
+            gender TEXT NOT NULL,
+            berth_preference TEXT NOT NULL,
+            allocation_status TEXT NOT NULL,
+            coach_code TEXT,
+            seat_no INTEGER,
+            fare REAL NOT NULL,
+            FOREIGN KEY(booking_id) REFERENCES bookings(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS waitlist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            booking_id INTEGER NOT NULL,
+            position INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(booking_id) REFERENCES bookings(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_bookings_pnr ON bookings(pnr);
+        CREATE INDEX IF NOT EXISTS idx_bookings_date ON bookings(journey_date);
+        CREATE INDEX IF NOT EXISTS idx_passengers_booking ON passengers(booking_id);
+        """)
+
+    def execute(self, sql, params=()):
+        cur = self.conn.execute(sql, params)
+        self.conn.commit()
+        return cur
+
+    def executemany(self, sql, seq):
+        cur = self.conn.executemany(sql, seq)
+        self.conn.commit()
+        return cur
+
+    def query_one(self, sql, params=()):
+        return self.conn.execute(sql, params).fetchone()
+
+    def query_all(self, sql, params=()):
+        return self.conn.execute(sql, params).fetchall()
+
+    def close(self):
+        self.conn.close()
