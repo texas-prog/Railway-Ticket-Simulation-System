@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Railway Ticket Simulation System
---------------------------------
+
 A detailed educational railway reservation simulator using:
 - Python OOP
 - SQLite database
@@ -32,7 +32,7 @@ from typing import Optional
 
 DB_NAME = "railway.db"
 
-# ----------------------------- Utilities ----------------------------- #
+# Utilities #
 
 def money(amount: float) -> str:
     return f"₹{amount:,.2f}"
@@ -92,7 +92,7 @@ def ask_float(prompt: str, minimum=None) -> float:
         return value
 
 
-# ----------------------------- Data classes ----------------------------- #
+# Data classes #
 
 @dataclass
 class Passenger:
@@ -113,7 +113,7 @@ class SearchResult:
     destination: str
     duration_hours: float
 
-# ----------------------------- Database ----------------------------- #
+# Database #
 
 class Database:
     def __init__(self, db_name: str = DB_NAME):
@@ -235,7 +235,7 @@ class Database:
     def close(self):
         self.conn.close()
 
-# ----------------------------- Core system ----------------------------- #
+# Core system #
 
 class RailwaySystem:
     CLASS_INFO = {
