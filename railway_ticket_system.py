@@ -92,3 +92,23 @@ def ask_float(prompt: str, minimum=None) -> float:
         return value
 
 
+# ----------------------------- Data classes ----------------------------- #
+
+@dataclass
+class Passenger:
+    name: str
+    age: int
+    gender: str
+    berth_preference: str = "No Preference"
+
+
+@dataclass
+class SearchResult:
+    train_id: int
+    train_no: str
+    train_name: str
+    departure: str
+    arrival: str
+    source: str
+    destination: str
+    duration_hours: float
