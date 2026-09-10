@@ -32,7 +32,7 @@ from typing import Optional
 
 DB_NAME = "railway.db"
 
-# ----------------------------- Utilities ----------------------------- #
+# Utilities #
 
 def money(amount: float) -> str:
     return f"₹{amount:,.2f}"
@@ -92,7 +92,7 @@ def ask_float(prompt: str, minimum=None) -> float:
         return value
 
 
-# ----------------------------- Data classes ----------------------------- #
+# Data classes #
 
 @dataclass
 class Passenger:
@@ -113,7 +113,7 @@ class SearchResult:
     destination: str
     duration_hours: float
 
-# ----------------------------- Database ----------------------------- #
+# Database #
 
 class Database:
     def __init__(self, db_name: str = DB_NAME):
@@ -235,7 +235,7 @@ class Database:
     def close(self):
         self.conn.close()
 
-# ----------------------------- Core system ----------------------------- #
+# Core system #
 
 class RailwaySystem:
     CLASS_INFO = {
@@ -250,3 +250,154 @@ class RailwaySystem:
 
     def __init__(self, db: Database):
         self.db = db
+
+    # Demo data #
+
+    def seed_demo_data(self):
+        station_count = self.db.query_one(
+            "SELECT COUNT(*) AS c FROM stations"
+        )["c"]
+
+        if station_count == 0:
+            stations = [
+                ("NDLS", "New Delhi", "Delhi"),
+                ("GZB", "Ghaziabad", "Ghaziabad"),
+                ("CNB", "Kanpur Central", "Kanpur"),
+                ("LKO", "Lucknow", "Lucknow"),
+                ("ALD", "Prayagraj Junction", "Prayagraj"),
+                ("BSB", "Varanasi Junction", "Varanasi"),
+                ("JHS", "Jhansi Junction", "Jhansi"),
+                ("BPL", "Bhopal Junction", "Bhopal"),
+                ("AGC", "Agra Cantt", "Agra"),
+            ]
+            self.db.executemany(
+                "INSERT INTO stations(code, name, city) VALUES (?, ?, ?)",
+                stations
+            )
+
+        train_count = self.db.query_one(
+            "SELECT COUNT(*) AS c FROM trains"
+        )["c"]
+
+        if train_count == 0:
+            trains = [
+                ("12001", "Shatabdi Simulation Express", "Shatabdi"),
+                ("12555", "Gomti Simulation Express", "Superfast"),
+                ("12192", "Delhi-Bhopal Simulation Express", "Superfast"),
+                ("22416", "Kashi Simulation Express", "Superfast"),
+            ]
+            for item in trains:
+                self.db.execute(
+                    "INSERT INTO trains(train_no, name, train_type) VALUES (?, ?, ?)",
+                    item
+                )
+
+        # Add routes if missing
+        self._seed_routes_and_coaches()
+
+        print("\nDemo data is ready.")
+
+    def _station_id(self, code: str) -> int:
+        row = self.db.query_one(
+            "SELECT id FROM stations WHERE code = ?", (code.upper(),)
+        )
+        if not row:
+            raise ValueError(f"Unknown station code: {code}")
+        return row["id"]
+
+    def _train_id(self, train_no: str) -> int:
+        row = self.db.query_one(
+            "SELECT id FROM trains WHERE train_no = ?", (train_no,)
+        )
+        if not row:
+            raise ValueError(f"Unknown train number: {train_no}")
+        return row["id"]
+
+    def _seed_routes_and_coaches(self):
+        route_count = self.db.query_one(
+            "SELECT COUNT(*) AS c FROM routes"
+        )["c"]
+
+        if route_count == 0:
+            route_data = {
+                "12001": [
+                    ("NDLS", "06:00", "06:00", 0),
+                    ("GZB", "06:28", "06:30", 25),
+                    ("AGC", "08:00", "08:05", 195),
+                    ("JHS", "10:15", "10:20", 470),
+                ],
+                "12555": [
+                    ("NDLS", "18:30", "18:30", 0),
+                    ("GZB", "19:00", "19:02", 25),
+                    ("CNB", "23:15", "23:25", 440),
+                    ("LKO", "01:30", "01:40", 510),
+                ],
+                "12192": [
+                    ("NDLS", "21:00", "21:00", 0),
+                    ("AGC", "23:05", "23:10", 195),
+                    ("JHS", "01:20", "01:25", 450),
+                    ("BPL", "05:30", "05:35", 700),
+                ],
+                "22416": [
+                    ("NDLS", "11:40", "11:40", 0),
+                    ("GZB", "12:10", "12:12", 25),
+                    ("ALD", "18:00", "18:05", 600),
+                    ("BSB", "20:30", "20:40", 730),
+                ],
+            }
+            for train_no, stops in route_data.items():
+                tid = self._train_id(train_no)
+                for idx, (code, arr, dep, distance) in enumerate(stops, 1):
+                    sid = self._station_id(code)
+                    self.db.execute(
+                        """
+                        INSERT INTO routes
+                        (train_id, station_id, stop_no, arrival, departure, distance_km)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (tid, sid, idx, arr, dep, distance)
+                    )
+
+        # Coaches and fares
+        for train in self.db.query_all("SELECT * FROM trains"):
+            train_id = train["id"]
+            coach_exists = self.db.query_one(
+                "SELECT 1 FROM coaches WHERE train_id = ? LIMIT 1", (train_id,)
+            )
+            if not coach_exists:
+                coach_plan = [
+                    ("S1", "SL", 72),
+                    ("S2", "SL", 72),
+                    ("B1", "3A", 64),
+                    ("B2", "3A", 64),
+                    ("A1", "2A", 46),
+                    ("H1", "1A", 24),
+                    ("C1", "CC", 78),
+                ]
+                self.db.executemany(
+                    """
+                    INSERT INTO coaches(train_id, coach_code, class_code, seat_capacity)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    [(train_id, *x) for x in coach_plan]
+                )
+
+            fare_exists = self.db.query_one(
+                "SELECT 1 FROM fares WHERE train_id = ? LIMIT 1", (train_id,)
+            )
+            if not fare_exists:
+                rate = {
+                    "SL": 1.40,
+                    "3A": 2.75,
+                    "2A": 4.20,
+                    "1A": 6.20,
+                    "CC": 2.20,
+                }
+                for code, value in rate.items():
+                    self.db.execute(
+                        """
+                        INSERT INTO fares(train_id, class_code, rate_per_km, base_fare)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (train_id, code, value, 75)
+                    )
