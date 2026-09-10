@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Railway Ticket Simulation System
---------------------------------
+
 A detailed educational railway reservation simulator using:
 - Python OOP
 - SQLite database
