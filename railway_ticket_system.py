@@ -915,7 +915,7 @@ class RailwaySystem:
 
         print("=" * 76 + "\n")
 
-    # ------------------------- Cancellation / promotion ------------------------- #
+    #  Cancellation / promotion  #
 
     def cancel_ticket(self, pnr: str) -> float:
         result = self.get_booking(pnr)
