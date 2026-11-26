@@ -401,3 +401,102 @@ class RailwaySystem:
                         """,
                         (train_id, code, value, 75)
                     )
+
+    # Search #
+
+    def search_trains(
+        self,
+        source_code: str,
+        destination_code: str,
+        date_str: str
+    ) -> list[SearchResult]:
+        source = source_code.upper()
+        destination = destination_code.upper()
+
+        if not parse_date(date_str):
+            raise ValueError("Journey date must be YYYY-MM-DD.")
+
+        rows = self.db.query_all(
+            """
+            SELECT
+                t.id AS train_id,
+                t.train_no,
+                t.name AS train_name,
+                s1.code AS source_code,
+                s2.code AS destination_code,
+                r1.departure AS departure,
+                r2.arrival AS arrival,
+                r1.distance_km AS source_distance,
+                r2.distance_km AS destination_distance
+            FROM trains t
+            JOIN routes r1 ON r1.train_id = t.id
+            JOIN stations s1 ON s1.id = r1.station_id
+            JOIN routes r2 ON r2.train_id = t.id
+            JOIN stations s2 ON s2.id = r2.station_id
+            WHERE t.active = 1
+              AND s1.code = ?
+              AND s2.code = ?
+              AND r1.stop_no < r2.stop_no
+            ORDER BY r1.departure
+            """,
+            (source, destination)
+        )
+
+        results = []
+        for row in rows:
+            duration = self._duration_hours(
+                row["departure"], row["arrival"]
+            )
+            results.append(
+                SearchResult(
+                    train_id=row["train_id"],
+                    train_no=row["train_no"],
+                    train_name=row["train_name"],
+                    departure=row["departure"],
+                    arrival=row["arrival"],
+                    source=row["source_code"],
+                    destination=row["destination_code"],
+                    duration_hours=duration,
+                )
+            )
+        return results
+
+    @staticmethod
+    def _duration_hours(departure: str, arrival: str) -> float:
+        fmt = "%H:%M"
+        dep = datetime.strptime(departure, fmt)
+        arr = datetime.strptime(arrival, fmt)
+        if arr < dep:
+            arr += timedelta(days=1)
+        return round((arr - dep).seconds / 3600, 2)
+
+    def get_route_distance(
+        self, train_id: int, source_code: str, destination_code: str
+    ) -> float:
+        row = self.db.query_one(
+            """
+            SELECT r2.distance_km - r1.distance_km AS km
+            FROM routes r1
+            JOIN routes r2 ON r1.train_id = r2.train_id
+            JOIN stations s1 ON s1.id = r1.station_id
+            JOIN stations s2 ON s2.id = r2.station_id
+            WHERE r1.train_id = ?
+              AND s1.code = ?
+              AND s2.code = ?
+              AND r1.stop_no < r2.stop_no
+            """,
+            (train_id, source_code.upper(), destination_code.upper())
+        )
+        if not row:
+            raise ValueError("Invalid route segment.")
+        return float(row["km"])
+
+    def list_stations(self):
+        rows = self.db.query_all(
+            "SELECT code, name, city FROM stations ORDER BY code"
+        )
+        print("\nStations")
+        print("-" * 70)
+        for row in rows:
+            print(f"{row['code']:5} | {row['name']}, {row['city']}")
+
