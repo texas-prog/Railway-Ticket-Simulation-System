@@ -1140,3 +1140,231 @@ class RailwaySystem:
         )["total"]
         print(f"{'Active booking value':<24}: {money(revenue)}")
 
+    #  CLI  #
+
+    def run(self):
+        self.seed_demo_data()
+
+        while True:
+            print("""
+================ RAILWAY TICKET SIMULATION ================
+
+1. Search trains
+2. Check seat availability
+3. Book ticket
+4. Print ticket / PNR status
+5. Cancel ticket
+6. List stations
+7. List trains
+8. System report
+9. Admin: add station
+10. Admin: add train
+11. Admin: add route stop
+12. Admin: add coach
+13. Admin: deactivate train
+0. Exit
+""")
+
+            choice = input("Choose an option: ").strip()
+
+            try:
+                if choice == "1":
+                    self.cli_search()
+                elif choice == "2":
+                    self.cli_availability()
+                elif choice == "3":
+                    self.cli_book()
+                elif choice == "4":
+                    pnr = input("Enter PNR: ").strip()
+                    self.print_ticket(pnr)
+                elif choice == "5":
+                    pnr = input("Enter PNR to cancel: ").strip()
+                    refund = self.cancel_ticket(pnr)
+                    print(f"Cancellation successful. Simulated refund: {money(refund)}")
+                elif choice == "6":
+                    self.list_stations()
+                elif choice == "7":
+                    self.list_trains()
+                elif choice == "8":
+                    self.report()
+                elif choice == "9":
+                    self.cli_add_station()
+                elif choice == "10":
+                    self.cli_add_train()
+                elif choice == "11":
+                    self.cli_add_route()
+                elif choice == "12":
+                    self.cli_add_coach()
+                elif choice == "13":
+                    train_no = input("Train number: ").strip()
+                    self.deactivate_train(train_no)
+                    print("Train deactivated.")
+                elif choice == "0":
+                    print("Goodbye.")
+                    break
+                else:
+                    print("Invalid choice.")
+
+            except (ValueError, sqlite3.IntegrityError) as exc:
+                print(f"Operation failed: {exc}")
+            except Exception as exc:
+                print(f"Unexpected error: {exc}")
+
+    def cli_search(self):
+        print("\n--- Train Search ---")
+        source = input("Source station code: ").strip()
+        destination = input("Destination station code: ").strip()
+        date = input("Journey date (YYYY-MM-DD): ").strip()
+
+        results = self.search_trains(source, destination, date)
+
+        if not results:
+            print("No trains found.")
+            return
+
+        print("\nTrain Search Results")
+        print("-" * 95)
+        print(
+            f"{'No.':<8} {'Train':<35} {'Dep':<7} {'Arr':<7} "
+            f"{'Duration':<10} {'Route'}"
+        )
+        for row in results:
+            print(
+                f"{row.train_no:<8} {row.train_name:<35} "
+                f"{row.departure:<7} {row.arrival:<7} "
+                f"{row.duration_hours:<10} "
+                f"{row.source}->{row.destination}"
+            )
+
+    def cli_availability(self):
+        print("\n--- Seat Availability ---")
+        train_no = input("Train number: ").strip()
+        date = input("Journey date (YYYY-MM-DD): ").strip()
+        class_code = input("Class (SL/3A/2A/1A/CC): ").strip().upper()
+
+        train_id = self._train_id(train_no)
+        inv = self.inventory_status(train_id, date, class_code)
+        print(f"Class        : {class_code} - {self.CLASS_INFO[class_code]['name']}")
+        print(f"Capacity     : {inv['capacity']}")
+        print(f"Confirmed    : {inv['confirmed']}")
+        print(f"Available    : {inv['available']}")
+        print(f"Waitlisted   : {inv['waitlisted']}")
+        print(f"Status       : {inv['status']}")
+
+        if inv["confirmed"] > 0:
+            print("\nOccupied seats:")
+            for row in self.coach_chart(train_id, date, class_code):
+                print(f"  {row['coach_code']}-{row['seat_no']} : {row['name']} ({row['pnr']})")
+
+    def cli_book(self):
+        print("\n--- Book Ticket ---")
+        train_no = input("Train number: ").strip()
+        date = input("Journey date (YYYY-MM-DD): ").strip()
+        source = input("Source station code: ").strip().upper()
+        destination = input("Destination station code: ").strip().upper()
+        class_code = input("Class (SL/3A/2A/1A/CC): ").strip().upper()
+
+        count = ask_int("Number of passengers (1-6): ", 1, 6)
+        passengers = []
+
+        for i in range(1, count + 1):
+            print(f"\nPassenger {i}")
+            name = input("Name: ").strip()
+            age = ask_int("Age: ", 0, 120)
+            gender = input("Gender: ").strip().upper()
+            print("Berths:", ", ".join(self.BERTHS), ", No Preference")
+            berth = input("Berth preference: ").strip() or "No Preference"
+            passengers.append(
+                Passenger(name, age, gender, berth)
+            )
+
+        total = self.calculate_fare(
+            self._train_id(train_no),
+            source,
+            destination,
+            class_code,
+            count
+        )
+
+        print(f"\nEstimated total fare: {money(total)}")
+        confirm = input("Confirm booking? (y/n): ").strip().lower()
+
+        if confirm != "y":
+            print("Booking discarded.")
+            return
+
+        pnr = self.book_ticket(
+            train_no,
+            date,
+            source,
+            destination,
+            class_code,
+            passengers
+        )
+
+        print(f"\nBooking successful. Your PNR is: {pnr}")
+        self.print_ticket(pnr)
+
+    def cli_add_station(self):
+        print("\n--- Add Station ---")
+        code = input("Code: ").strip()
+        name = input("Name: ").strip()
+        city = input("City: ").strip()
+        self.add_station(code, name, city)
+        print("Station added.")
+
+    def cli_add_train(self):
+        print("\n--- Add Train ---")
+        no = input("Train number: ").strip()
+        name = input("Train name: ").strip()
+        typ = input("Train type: ").strip()
+        self.add_train(no, name, typ)
+        print("Train added. Add route stops and coaches next.")
+
+    def cli_add_route(self):
+        print("\n--- Add Route Stop ---")
+        train_no = input("Train number: ").strip()
+        station_code = input("Station code: ").strip().upper()
+        stop_no = ask_int("Stop number: ", 1)
+        arrival = input("Arrival HH:MM: ").strip()
+        departure = input("Departure HH:MM: ").strip()
+        distance = ask_float("Distance from route origin (km): ", 0)
+
+        self.add_route_stop(
+            train_no,
+            station_code,
+            stop_no,
+            arrival,
+            departure,
+            distance
+        )
+        print("Route stop added.")
+
+    def cli_add_coach(self):
+        print("\n--- Add Coach ---")
+        train_no = input("Train number: ").strip()
+        coach_code = input("Coach code: ").strip()
+        class_code = input("Class code: ").strip().upper()
+        capacity = ask_int("Seat capacity: ", 1)
+        self.add_coach(train_no, coach_code, class_code, capacity)
+        print("Coach added.")
+
+
+def main():
+    print("=" * 60)
+    print("         RAILWAY TICKET SIMULATION SYSTEM")
+    print("=" * 60)
+    print("Educational project — SQLite-backed Python application")
+
+    db = Database()
+    system = RailwaySystem(db)
+
+    try:
+        system.run()
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    main()
+
