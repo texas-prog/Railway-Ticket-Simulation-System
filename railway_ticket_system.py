@@ -1039,3 +1039,104 @@ class RailwaySystem:
                 "UPDATE waitlist SET position = ? WHERE id = ?",
                 (position, row["id"])
             )
+
+    #  Admin operations  #
+
+    def add_station(self, code: str, name: str, city: str):
+        self.db.execute(
+            "INSERT INTO stations(code, name, city) VALUES (?, ?, ?)",
+            (code.upper(), name.strip(), city.strip())
+        )
+
+    def add_train(self, train_no: str, name: str, train_type: str):
+        self.db.execute(
+            "INSERT INTO trains(train_no, name, train_type) VALUES (?, ?, ?)",
+            (train_no.strip(), name.strip(), train_type.strip())
+        )
+
+    def list_trains(self):
+        rows = self.db.query_all(
+            "SELECT train_no, name, train_type, active FROM trains ORDER BY train_no"
+        )
+        print("\nTrains")
+        print("-" * 80)
+        for row in rows:
+            state = "ACTIVE" if row["active"] else "INACTIVE"
+            print(
+                f"{row['train_no']:<8} | {row['name']:<38} | "
+                f"{row['train_type']:<12} | {state}"
+            )
+
+    def deactivate_train(self, train_no: str):
+        self.db.execute(
+            "UPDATE trains SET active = 0 WHERE train_no = ?",
+            (train_no.strip(),)
+        )
+
+    def add_route_stop(
+        self,
+        train_no: str,
+        station_code: str,
+        stop_no: int,
+        arrival: str,
+        departure: str,
+        distance_km: float
+    ):
+        train_id = self._train_id(train_no)
+        station_id = self._station_id(station_code)
+        self.db.execute(
+            """
+            INSERT INTO routes
+            (train_id, station_id, stop_no, arrival, departure, distance_km)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                train_id,
+                station_id,
+                stop_no,
+                arrival,
+                departure,
+                distance_km,
+            )
+        )
+
+    def add_coach(
+        self, train_no: str, coach_code: str, class_code: str, capacity: int
+    ):
+        train_id = self._train_id(train_no)
+        class_code = class_code.upper()
+        if class_code not in self.CLASS_INFO:
+            raise ValueError("Invalid class code.")
+        self.db.execute(
+            """
+            INSERT INTO coaches(train_id, coach_code, class_code, seat_capacity)
+            VALUES (?, ?, ?, ?)
+            """,
+            (train_id, coach_code.upper(), class_code, capacity)
+        )
+
+    #  Reports  #
+
+    def report(self):
+        print("\nSystem Report")
+        print("-" * 50)
+        for query, label in [
+            ("SELECT COUNT(*) AS c FROM stations", "Stations"),
+            ("SELECT COUNT(*) AS c FROM trains", "Trains"),
+            ("SELECT COUNT(*) AS c FROM bookings", "Bookings"),
+            ("SELECT COUNT(*) AS c FROM passengers", "Passengers"),
+            ("SELECT COUNT(*) AS c FROM bookings WHERE status='CONFIRMED'", "Confirmed bookings"),
+            ("SELECT COUNT(*) AS c FROM bookings WHERE status='WAITLIST'", "Waitlisted bookings"),
+            ("SELECT COUNT(*) AS c FROM bookings WHERE status='CANCELLED'", "Cancelled bookings"),
+        ]:
+            print(f"{label:<24}: {self.db.query_one(query)['c']}")
+
+        revenue = self.db.query_one(
+            """
+            SELECT COALESCE(SUM(total_fare), 0) AS total
+            FROM bookings
+            WHERE status != 'CANCELLED'
+            """
+        )["total"]
+        print(f"{'Active booking value':<24}: {money(revenue)}")
+
