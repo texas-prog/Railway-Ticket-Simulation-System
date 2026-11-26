@@ -500,3 +500,417 @@ class RailwaySystem:
         for row in rows:
             print(f"{row['code']:5} | {row['name']}, {row['city']}")
 
+    #  Fare  #
+
+    def calculate_fare(
+        self,
+        train_id: int,
+        source_code: str,
+        destination_code: str,
+        class_code: str,
+        passenger_count: int
+    ) -> float:
+        class_code = class_code.upper()
+        if class_code not in self.CLASS_INFO:
+            raise ValueError("Unsupported class.")
+
+        distance = self.get_route_distance(
+            train_id, source_code, destination_code
+        )
+        fare = self.db.query_one(
+            """
+            SELECT rate_per_km, base_fare
+            FROM fares
+            WHERE train_id = ? AND class_code = ?
+            """,
+            (train_id, class_code)
+        )
+        if not fare:
+            raise ValueError("Fare is not configured for this train/class.")
+
+        per_passenger = (
+            fare["base_fare"]
+            + distance * fare["rate_per_km"] * self.CLASS_INFO[class_code]["multiplier"]
+        )
+
+        # Small simulation components
+        reservation_charge = {
+            "SL": 20,
+            "3A": 40,
+            "2A": 50,
+            "1A": 60,
+            "CC": 35,
+        }[class_code]
+
+        service_charge = 18
+        total = passenger_count * (
+            per_passenger + reservation_charge + service_charge
+        )
+        return round(total, 2)
+
+    #  Inventory  #
+
+    def class_capacity(self, train_id: int, class_code: str) -> int:
+        row = self.db.query_one(
+            """
+            SELECT COALESCE(SUM(seat_capacity), 0) AS cap
+            FROM coaches
+            WHERE train_id = ? AND class_code = ?
+            """,
+            (train_id, class_code.upper())
+        )
+        return int(row["cap"])
+
+    def active_booked_seat_count(
+        self, train_id: int, date_str: str, class_code: str
+    ) -> int:
+        row = self.db.query_one(
+            """
+            SELECT COUNT(*) AS c
+            FROM passengers p
+            JOIN bookings b ON b.id = p.booking_id
+            WHERE b.train_id = ?
+              AND b.journey_date = ?
+              AND b.class_code = ?
+              AND b.status = 'CONFIRMED'
+              AND p.allocation_status = 'CONFIRMED'
+            """,
+            (train_id, date_str, class_code.upper())
+        )
+        return int(row["c"])
+
+    def inventory_status(
+        self, train_id: int, date_str: str, class_code: str
+    ):
+        capacity = self.class_capacity(train_id, class_code)
+        confirmed = self.active_booked_seat_count(
+            train_id, date_str, class_code
+        )
+        waitlisted = self.db.query_one(
+            """
+            SELECT COUNT(*) AS c
+            FROM bookings
+            WHERE train_id = ?
+              AND journey_date = ?
+              AND class_code = ?
+              AND status = 'WAITLIST'
+            """,
+            (train_id, date_str, class_code.upper())
+        )["c"]
+
+        if confirmed < capacity:
+            status = "AVAILABLE"
+        else:
+            status = "WAITLIST"
+
+        return {
+            "capacity": capacity,
+            "confirmed": confirmed,
+            "available": max(0, capacity - confirmed),
+            "waitlisted": waitlisted,
+            "status": status,
+        }
+
+    def _next_seat(self, train_id: int, date_str: str, class_code: str):
+        # Find first unused coach/seat.
+        coaches = self.db.query_all(
+            """
+            SELECT coach_code, seat_capacity
+            FROM coaches
+            WHERE train_id = ? AND class_code = ?
+            ORDER BY id
+            """,
+            (train_id, class_code)
+        )
+
+        taken = {
+            (row["coach_code"], row["seat_no"])
+            for row in self.db.query_all(
+                """
+                SELECT p.coach_code, p.seat_no
+                FROM passengers p
+                JOIN bookings b ON b.id = p.booking_id
+                WHERE b.train_id = ?
+                  AND b.journey_date = ?
+                  AND b.class_code = ?
+                  AND b.status = 'CONFIRMED'
+                  AND p.allocation_status = 'CONFIRMED'
+                """,
+                (train_id, date_str, class_code)
+            )
+        }
+
+        for coach in coaches:
+            for seat_no in range(1, coach["seat_capacity"] + 1):
+                if (coach["coach_code"], seat_no) not in taken:
+                    return coach["coach_code"], seat_no
+
+        return None, None
+
+    def coach_chart(
+        self, train_id: int, date_str: str, class_code: str
+    ):
+        rows = self.db.query_all(
+            """
+            SELECT p.coach_code, p.seat_no, p.name, b.pnr
+            FROM passengers p
+            JOIN bookings b ON b.id = p.booking_id
+            WHERE b.train_id = ?
+              AND b.journey_date = ?
+              AND b.class_code = ?
+              AND b.status = 'CONFIRMED'
+              AND p.allocation_status = 'CONFIRMED'
+            ORDER BY p.coach_code, p.seat_no
+            """,
+            (train_id, date_str, class_code.upper())
+        )
+        return rows
+
+    #  Booking  #
+
+    def book_ticket(
+        self,
+        train_no: str,
+        journey_date: str,
+        source_code: str,
+        destination_code: str,
+        class_code: str,
+        passengers: list[Passenger]
+    ) -> str:
+        if not passengers:
+            raise ValueError("At least one passenger is required.")
+
+        if not parse_date(journey_date):
+            raise ValueError("Journey date must be YYYY-MM-DD.")
+
+        today = datetime.now().date()
+        journey = parse_date(journey_date).date()
+        if journey < today:
+            raise ValueError("Journey date cannot be in the past.")
+
+        train_id = self._train_id(train_no)
+        class_code = class_code.upper()
+
+        search = self.search_trains(
+            source_code, destination_code, journey_date
+        )
+        valid_train = any(x.train_id == train_id for x in search)
+        if not valid_train:
+            raise ValueError("Train does not operate on this route.")
+
+        if class_code not in self.CLASS_INFO:
+            raise ValueError("Invalid class.")
+
+        # Limit booking size for the simulation.
+        if len(passengers) > 6:
+            raise ValueError("Maximum 6 passengers per booking.")
+
+        fare_total = self.calculate_fare(
+            train_id,
+            source_code,
+            destination_code,
+            class_code,
+            len(passengers)
+        )
+
+        inv = self.inventory_status(train_id, journey_date, class_code)
+
+        if inv["available"] >= len(passengers):
+            booking_status = "CONFIRMED"
+        else:
+            booking_status = "WAITLIST"
+
+        # Make PNR collision extremely unlikely.
+        for _ in range(20):
+            pnr = generate_pnr()
+            if not self.db.query_one(
+                "SELECT 1 FROM bookings WHERE pnr = ?", (pnr,)
+            ):
+                break
+        else:
+            raise RuntimeError("Unable to generate unique PNR.")
+
+        source_id = self._station_id(source_code)
+        dest_id = self._station_id(destination_code)
+
+        cur = self.db.execute(
+            """
+            INSERT INTO bookings
+            (pnr, train_id, journey_date, source_station_id,
+             destination_station_id, class_code, status, total_fare, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                pnr,
+                train_id,
+                journey_date,
+                source_id,
+                dest_id,
+                class_code,
+                booking_status,
+                fare_total,
+                now_str(),
+            )
+        )
+        booking_id = cur.lastrowid
+
+        if booking_status == "CONFIRMED":
+            for index, passenger in enumerate(passengers, 1):
+                coach, seat = self._next_seat(
+                    train_id, journey_date, class_code
+                )
+                if not coach:
+                    # Safety fallback: should not happen because capacity was checked.
+                    raise RuntimeError("Seat allocation failed.")
+
+                passenger_fare = round(fare_total / len(passengers), 2)
+                self.db.execute(
+                    """
+                    INSERT INTO passengers
+                    (booking_id, passenger_no, name, age, gender,
+                     berth_preference, allocation_status, coach_code,
+                     seat_no, fare)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        booking_id,
+                        index,
+                        passenger.name,
+                        passenger.age,
+                        passenger.gender,
+                        passenger.berth_preference,
+                        "CONFIRMED",
+                        coach,
+                        seat,
+                        passenger_fare,
+                    )
+                )
+        else:
+            for index, passenger in enumerate(passengers, 1):
+                self.db.execute(
+                    """
+                    INSERT INTO passengers
+                    (booking_id, passenger_no, name, age, gender,
+                     berth_preference, allocation_status, coach_code,
+                     seat_no, fare)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        booking_id,
+                        index,
+                        passenger.name,
+                        passenger.age,
+                        passenger.gender,
+                        passenger.berth_preference,
+                        "WAITLIST",
+                        None,
+                        None,
+                        round(fare_total / len(passengers), 2),
+                    )
+                )
+
+            next_pos = self.db.query_one(
+                """
+                SELECT COALESCE(MAX(position), 0) + 1 AS pos
+                FROM waitlist
+                WHERE journey_date IS NULL
+                """,
+            )
+            # The query above intentionally ignores booking date; actual position
+            # is recalculated below per train/date/class.
+            pos_row = self.db.query_one(
+                """
+                SELECT COALESCE(MAX(w.position), 0) + 1 AS pos
+                FROM waitlist w
+                JOIN bookings b ON b.id = w.booking_id
+                WHERE b.train_id = ?
+                  AND b.journey_date = ?
+                  AND b.class_code = ?
+                  AND b.status = 'WAITLIST'
+                """,
+                (train_id, journey_date, class_code)
+            )
+
+            self.db.execute(
+                "INSERT INTO waitlist(booking_id, position, created_at) VALUES (?, ?, ?)",
+                (booking_id, pos_row["pos"], now_str())
+            )
+
+        return pnr
+
+    def get_booking(self, pnr: str):
+        row = self.db.query_one(
+            """
+            SELECT
+                b.*,
+                t.train_no,
+                t.name AS train_name,
+                s1.code AS source_code,
+                s1.name AS source_name,
+                s2.code AS destination_code,
+                s2.name AS destination_name
+            FROM bookings b
+            JOIN trains t ON t.id = b.train_id
+            JOIN stations s1 ON s1.id = b.source_station_id
+            JOIN stations s2 ON s2.id = b.destination_station_id
+            WHERE b.pnr = ?
+            """,
+            (pnr.upper().strip(),)
+        )
+        if not row:
+            return None
+        passengers = self.db.query_all(
+            """
+            SELECT *
+            FROM passengers
+            WHERE booking_id = ?
+            ORDER BY passenger_no
+            """,
+            (row["id"],)
+        )
+        waitlist = self.db.query_one(
+            "SELECT position FROM waitlist WHERE booking_id = ?",
+            (row["id"],)
+        )
+        return row, passengers, waitlist
+
+    def print_ticket(self, pnr: str):
+        result = self.get_booking(pnr)
+        if not result:
+            print("PNR not found.")
+            return
+
+        booking, passengers, wait = result
+
+        print("\n" + "=" * 76)
+        print("                 RAILWAY TICKET SIMULATION")
+        print("=" * 76)
+        print(f"PNR              : {booking['pnr']}")
+        print(f"Train            : {booking['train_no']} - {booking['train_name']}")
+        print(f"Journey Date     : {booking['journey_date']}")
+        print(
+            f"Route            : {booking['source_code']} ({booking['source_name']})"
+            f" -> {booking['destination_code']} ({booking['destination_name']})"
+        )
+        print(f"Class            : {booking['class_code']} - {self.CLASS_INFO[booking['class_code']]['name']}")
+        print(f"Booking Status   : {booking['status']}")
+        print(f"Total Fare       : {money(booking['total_fare'])}")
+        print(f"Booked At        : {booking['created_at']}")
+        print("-" * 76)
+
+        for p in passengers:
+            allocation = p["allocation_status"]
+            if allocation == "CONFIRMED":
+                seat = f"{p['coach_code']}-{p['seat_no']}"
+            else:
+                seat = "WL"
+            print(
+                f"{p['passenger_no']:>2}. {p['name']:<22} "
+                f"Age {p['age']:<3} {p['gender']:<6} "
+                f"{seat:<8} {allocation}"
+            )
+
+        if wait:
+            print(f"\nWaitlist Position : {wait['position']}")
+
+        print("=" * 76 + "\n")
