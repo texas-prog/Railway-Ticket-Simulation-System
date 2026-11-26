@@ -914,3 +914,128 @@ class RailwaySystem:
             print(f"\nWaitlist Position : {wait['position']}")
 
         print("=" * 76 + "\n")
+
+    # ------------------------- Cancellation / promotion ------------------------- #
+
+    def cancel_ticket(self, pnr: str) -> float:
+        result = self.get_booking(pnr)
+        if not result:
+            raise ValueError("PNR not found.")
+
+        booking, passengers, _ = result
+
+        if booking["status"] == "CANCELLED":
+            raise ValueError("Ticket is already cancelled.")
+
+        original = float(booking["total_fare"])
+
+        if booking["status"] == "CONFIRMED":
+            refund = round(original * 0.80, 2)
+            self.db.execute(
+                "UPDATE bookings SET status = 'CANCELLED' WHERE id = ?",
+                (booking["id"],)
+            )
+            self._promote_waitlist(
+                booking["train_id"],
+                booking["journey_date"],
+                booking["class_code"]
+            )
+        else:
+            refund = round(original * 0.90, 2)
+            self.db.execute(
+                "UPDATE bookings SET status = 'CANCELLED' WHERE id = ?",
+                (booking["id"],)
+            )
+            self.db.execute(
+                "DELETE FROM waitlist WHERE booking_id = ?", (booking["id"],)
+            )
+            self._resequence_waitlist(
+                booking["train_id"], booking["journey_date"], booking["class_code"]
+            )
+
+        return refund
+
+    def _promote_waitlist(self, train_id: int, journey_date: str, class_code: str):
+        while True:
+            inv = self.inventory_status(
+                train_id, journey_date, class_code
+            )
+            if inv["available"] <= 0:
+                return
+
+            row = self.db.query_one(
+                """
+                SELECT b.id, b.pnr
+                FROM waitlist w
+                JOIN bookings b ON b.id = w.booking_id
+                WHERE b.train_id = ?
+                  AND b.journey_date = ?
+                  AND b.class_code = ?
+                  AND b.status = 'WAITLIST'
+                ORDER BY w.position
+                LIMIT 1
+                """,
+                (train_id, journey_date, class_code)
+            )
+            if not row:
+                return
+
+            booking_id = row["id"]
+            passengers = self.db.query_all(
+                "SELECT * FROM passengers WHERE booking_id = ? ORDER BY passenger_no",
+                (booking_id,)
+            )
+
+            if inv["available"] < len(passengers):
+                return
+
+            for passenger in passengers:
+                coach, seat = self._next_seat(
+                    train_id, journey_date, class_code
+                )
+                if not coach:
+                    return
+                self.db.execute(
+                    """
+                    UPDATE passengers
+                    SET allocation_status = 'CONFIRMED',
+                        coach_code = ?,
+                        seat_no = ?
+                    WHERE id = ?
+                    """,
+                    (coach, seat, passenger["id"])
+                )
+
+            self.db.execute(
+                "UPDATE bookings SET status = 'CONFIRMED' WHERE id = ?",
+                (booking_id,)
+            )
+            self.db.execute(
+                "DELETE FROM waitlist WHERE booking_id = ?",
+                (booking_id,)
+            )
+            self._resequence_waitlist(
+                train_id, journey_date, class_code
+            )
+
+    def _resequence_waitlist(
+        self, train_id: int, journey_date: str, class_code: str
+    ):
+        rows = self.db.query_all(
+            """
+            SELECT w.id
+            FROM waitlist w
+            JOIN bookings b ON b.id = w.booking_id
+            WHERE b.train_id = ?
+              AND b.journey_date = ?
+              AND b.class_code = ?
+              AND b.status = 'WAITLIST'
+            ORDER BY w.position, w.id
+            """,
+            (train_id, journey_date, class_code)
+        )
+        for position, row in enumerate(rows, 1):
+            self.db.execute(
+                "UPDATE waitlist SET position = ? WHERE id = ?",
+                (position, row["id"])
+            )
